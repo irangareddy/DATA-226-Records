@@ -2,11 +2,13 @@ from airflow import DAG
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from airflow.providers.snowflake.operators.snowflake import SnowflakeOperator
 from airflow.utils.dates import days_ago
+from airflow.utils.timezone import make_aware
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.dagrun_operator import TriggerDagRunOperator
 from airflow.models import Variable
 from airflow.decorators import task
+from datetime import datetime, timedelta
 import requests
 
 def return_snowflake_conn():
@@ -26,7 +28,7 @@ def extract(symbols, api_key):
                 daily_info['6. date'] = d
                 daily_info['7. symbol'] = symbol
                 results.append(daily_info)
-            all_results[symbol] = results[-90:]  # Last 90 days
+            all_results[symbol] = results[-90:]
     except Exception as e:
         print(f"Error extracting data for {symbol}: {e}")
     return all_results
@@ -70,10 +72,21 @@ def load(con, results, target_table):
         con.execute("ROLLBACK")
         print(f"Error loading data: {e}")
 
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
 with DAG(
     dag_id='stock_data_pipeline',
-    start_date=days_ago(1),
-    schedule_interval='@daily',
+    default_args=default_args,
+    description='A DAG to fetch and process US stock market data after trading hours',
+    start_date=make_aware(datetime(2024, 10, 10)),
+    schedule_interval='30 21 * * 1-5',
     catchup=False
 ) as dag:
 
@@ -81,7 +94,6 @@ with DAG(
     api_key = Variable.get("alpha_vantage_api")
     symbols = Variable.get("stock_symbols", default_var=['NVDA', 'ORCL'])
 
-    # Task flow
     extract_task = extract(symbols, api_key)
     transform_task = transform(extract_task)
     load_task = load(return_snowflake_conn(), transform_task, target_table)
